@@ -7,12 +7,15 @@ import { at, demoGpx, fmtPace, fmtT, lerpAngle, parseGpx, speedColor, type Cur, 
 const DUR = 30000; // ms animasi pada 1×
 const SPEEDS = [1, 2, 4, 8];
 const EMPTY = { type: 'FeatureCollection' as const, features: [] };
+const ICON_KEY = 'jejak.icon';
+const DOT_CSS = 'width:22px;height:22px;border-radius:50%;background:#2563eb;border:3px solid #fff;box-shadow:0 0 0 6px rgba(37,99,235,.25),0 2px 6px rgba(0,0,0,.4)';
+const iconCss = (u: string) => `width:64px;height:64px;background:url("${u}") center/contain no-repeat;filter:drop-shadow(0 2px 4px rgba(0,0,0,.45))`;
 
 type Cam = { lng: number; lat: number; zoom: number; bearing: number; pitch: number; pad: number };
 type Hud = { d: number; t: number; v: number; g: number };
 type St = {
   P: number; playing: boolean; mult: number; follow: boolean; last: number; idx: number;
-  cam: Cam | null; ov: Cam | null; hud: Hud; exp: { hold: number; finish: () => void } | null;
+  cam: Cam | null; ov: Cam | null; hud: Hud; exp: { hold: number; finish: () => void } | null; pos: [number, number];
 };
 
 function mapStyle(): string | maplibregl.StyleSpecification {
@@ -36,6 +39,21 @@ function camTarget(s: St, cur: Cur): Cam | null {
     return { lng: cur.lon, lat: cur.lat, zoom: 17.3 - Math.min(1.3, Math.max(0, cur.v - 2) * 0.2), bearing: cur.b, pitch: 62, pad: 0.3 };
   }
   return s.ov;
+}
+
+/** DOM marker tidak ikut tertangkap kanvas peta, jadi digambar manual ke video. */
+function drawMarker(c: CanvasRenderingContext2D, x: number, y: number, img: HTMLImageElement | null) {
+  if (img) {
+    const s = 110;
+    c.save();
+    c.shadowColor = 'rgba(0,0,0,.45)'; c.shadowBlur = 8; c.shadowOffsetY = 3;
+    c.drawImage(img, x - s / 2, y - s / 2, s, s);
+    c.restore();
+    return;
+  }
+  c.fillStyle = 'rgba(37,99,235,.25)'; c.beginPath(); c.arc(x, y, 22, 0, 7); c.fill();
+  c.fillStyle = '#fff'; c.beginPath(); c.arc(x, y, 15, 0, 7); c.fill();
+  c.fillStyle = '#2563eb'; c.beginPath(); c.arc(x, y, 10, 0, 7); c.fill();
 }
 
 function drawHud(c: CanvasRenderingContext2D, h: Hud, name: string) {
@@ -64,9 +82,10 @@ export default function TrackPlayer() {
   const mapRef = useRef<maplibregl.Map | null>(null);
   const markerRef = useRef<maplibregl.Marker | null>(null);
   const trackRef = useRef<Track | null>(null);
+  const iconImg = useRef<HTMLImageElement | null>(null);
   const S = useRef<St>({
     P: 0, playing: false, mult: 1, follow: true, last: 0, idx: -1,
-    cam: null, ov: null, hud: { d: 0, t: 0, v: 0, g: 0 }, exp: null,
+    cam: null, ov: null, hud: { d: 0, t: 0, v: 0, g: 0 }, exp: null, pos: [0, 0],
   });
   const [track, setTrack] = useState<Track | null>(null);
   const [ready, setReady] = useState(false);
@@ -76,6 +95,8 @@ export default function TrackPlayer() {
   const [mult, setMult] = useState(1);
   const [msg, setMsg] = useState('');
   const [pct, setPct] = useState<number | null>(null);
+  const [hasIcon, setHasIcon] = useState(false);
+  const [ratio, setRatio] = useState<'16:9' | '9:16'>('16:9');
 
   const calcOv = useCallback(() => {
     const map = mapRef.current, tr = trackRef.current;
@@ -89,6 +110,16 @@ export default function TrackPlayer() {
     }
   }, []);
 
+  const applyIcon = useCallback((url: string | null) => {
+    const m = markerRef.current;
+    if (!m) return;
+    const el = m.getElement();
+    el.style.cssText = url ? iconCss(url) : DOT_CSS;
+    el.style.display = trackRef.current ? 'block' : 'none';
+    if (url) { const im = new Image(); im.onload = () => { iconImg.current = im; }; im.src = url; }
+    else iconImg.current = null;
+  }, []);
+
   // init peta
   useEffect(() => {
     const map = new maplibregl.Map({
@@ -97,8 +128,12 @@ export default function TrackPlayer() {
     });
     mapRef.current = map;
     const el = document.createElement('div');
-    el.style.cssText = 'display:none;width:22px;height:22px;border-radius:50%;background:#2563eb;border:3px solid #fff;box-shadow:0 0 0 6px rgba(37,99,235,.25),0 2px 6px rgba(0,0,0,.4)';
+    el.style.cssText = DOT_CSS + ';display:none';
     markerRef.current = new maplibregl.Marker({ element: el }).setLngLat([0, 0]).addTo(map);
+    try {
+      const saved = localStorage.getItem(ICON_KEY);
+      if (saved) { applyIcon(saved); setHasIcon(true); }
+    } catch { /* abaikan */ }
     const line = { 'line-cap': 'round' as const, 'line-join': 'round' as const };
     map.on('load', () => {
       map.addSource('route', { type: 'geojson', data: EMPTY });
@@ -112,7 +147,7 @@ export default function TrackPlayer() {
     });
     map.on('resize', calcOv);
     return () => { map.remove(); mapRef.current = null; setReady(false); };
-  }, [calcOv]);
+  }, [calcOv, applyIcon]);
 
   // track baru
   useEffect(() => {
@@ -159,6 +194,7 @@ export default function TrackPlayer() {
         geometry: { type: 'LineString', coordinates: [[a0.lon, a0.lat], [cur.lon, cur.lat]] },
       });
       markerRef.current?.setLngLat([cur.lon, cur.lat]);
+      s.pos = [cur.lon, cur.lat];
 
       const cam = s.cam, t = camTarget(s, cur);
       if (cam && t) {
@@ -205,11 +241,12 @@ export default function TrackPlayer() {
     const types = ['video/mp4;codecs=avc1', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm'];
     const mime = typeof MediaRecorder === 'undefined' ? undefined : types.find((t) => MediaRecorder.isTypeSupported(t));
     if (!mime) { setMsg('Browser ini tidak mendukung perekaman video.'); return; }
+    const W = ratio === '9:16' ? 1080 : 1920, H = ratio === '9:16' ? 1920 : 1080;
     s.playing = false; setPlaying(false); setPct(0); setMsg('');
     // paksa kanvas peta ke 1920×1080 (ditampilkan diperkecil di layar)
-    const k = Math.min(window.innerWidth / 1920, (window.innerHeight - 70) / 1080, 1);
+    const k = Math.min(window.innerWidth / W, (window.innerHeight - 70) / H, 1);
     Object.assign(wrap.style, {
-      position: 'fixed', inset: 'auto', left: '0', top: '60px', width: '1920px', height: '1080px',
+      position: 'fixed', inset: 'auto', left: '0', top: '60px', width: `${W}px`, height: `${H}px`,
       zIndex: '60', transformOrigin: '0 0', transform: `scale(${k})`,
     });
     map.setPixelRatio(1); map.resize();
@@ -219,9 +256,14 @@ export default function TrackPlayer() {
     await new Promise<void>((r) => { const to = setTimeout(r, 5000); map.once('idle', () => { clearTimeout(to); r(); }); });
 
     const comp = document.createElement('canvas');
-    comp.width = 1920; comp.height = 1080;
+    comp.width = W; comp.height = H;
     const c = comp.getContext('2d')!;
-    const paint = () => { c.drawImage(map.getCanvas(), 0, 0, 1920, 1080); drawHud(c, s.hud, tr.name); };
+    const paint = () => {
+      c.drawImage(map.getCanvas(), 0, 0, W, H);
+      const pt = map.project(s.pos);
+      drawMarker(c, pt.x, pt.y, iconImg.current);
+      drawHud(c, s.hud, tr.name);
+    };
     map.on('render', paint);
     const rec = new MediaRecorder(comp.captureStream(30), { mimeType: mime, videoBitsPerSecond: 12_000_000 });
     const chunks: Blob[] = [];
@@ -239,6 +281,32 @@ export default function TrackPlayer() {
     s.exp = { hold: 1.5, finish: () => { s.exp = null; rec.stop(); } };
     paint(); rec.start();
     s.playing = true; setPlaying(true);
+  };
+
+  const onIcon = (f?: File) => {
+    if (!f) return;
+    if (!/^image\/(png|webp)$/.test(f.type)) { setMsg('Pakai file PNG (disarankan) atau WebP.'); return; }
+    const url = URL.createObjectURL(f);
+    const im = new Image();
+    im.onload = () => {
+      // normalkan ke kanvas 256×256 (proporsi dijaga, latar tetap transparan)
+      const cv = document.createElement('canvas');
+      cv.width = cv.height = 256;
+      const x = cv.getContext('2d')!;
+      const r = Math.min(256 / im.width, 256 / im.height);
+      const w = im.width * r, h = im.height * r;
+      x.drawImage(im, (256 - w) / 2, (256 - h) / 2, w, h);
+      URL.revokeObjectURL(url);
+      const data = cv.toDataURL('image/png');
+      try { localStorage.setItem(ICON_KEY, data); } catch { /* abaikan */ }
+      applyIcon(data); setHasIcon(true); setMsg('');
+    };
+    im.onerror = () => { URL.revokeObjectURL(url); setMsg('Gagal membaca gambar.'); };
+    im.src = url;
+  };
+  const resetIcon = () => {
+    try { localStorage.removeItem(ICON_KEY); } catch { /* abaikan */ }
+    applyIcon(null); setHasIcon(false);
   };
 
   const btn = 'rounded-lg border border-slate-600 px-3 py-2 text-sm hover:bg-slate-800 disabled:opacity-40';
@@ -299,12 +367,19 @@ export default function TrackPlayer() {
             />
             <button className={btn} onClick={cycleSpeed}>{mult}×</button>
             <button className={btn} onClick={toggleFollow}>{follow ? 'Kamera: ikuti' : 'Kamera: semua rute'}</button>
+            <button className={btn} onClick={() => setRatio(ratio === '16:9' ? '9:16' : '16:9')}>Rasio: {ratio}</button>
             <button className={btn} onClick={doExport}>Ekspor video 1080p</button>
             <label className={`${btn} cursor-pointer`}>
               Ganti file
               <input type="file" accept=".gpx,application/gpx+xml,text/xml" className="hidden" onChange={(e) => readFile(e.target.files?.[0])} />
             </label>
+            <label className={`${btn} cursor-pointer`}>
+              Ikon penanda
+              <input type="file" accept="image/png,image/webp" className="hidden" onChange={(e) => { onIcon(e.target.files?.[0]); e.target.value = ''; }} />
+            </label>
+            {hasIcon && <button className={btn} onClick={resetIcon}>Reset ikon</button>}
           </div>
+          <p className="mt-2 text-xs text-slate-400">Ikon penanda: PNG transparan 256×256 px (rasio 1:1). Titik tengah gambar = posisi di rute.</p>
           {msg && <p className="mt-2 text-sm text-red-400">{msg}</p>}
         </div>
       )}
@@ -313,7 +388,7 @@ export default function TrackPlayer() {
         <>
           <div className="fixed inset-0 z-50 bg-black" />
           <div className="fixed left-0 right-0 top-0 z-[70] flex h-[60px] items-center justify-center text-sm text-slate-200">
-            Merekam 1920×1080… {pct}% — jangan pindah tab
+            Merekam {ratio === '9:16' ? '1080×1920' : '1920×1080'}… {pct}% — jangan pindah tab
           </div>
         </>
       )}
