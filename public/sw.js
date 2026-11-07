@@ -1,9 +1,9 @@
 // Service worker Jejak: cache cangkang aplikasi. Tile peta (domain lain) sengaja tidak di-cache.
-const CACHE = 'jejak-v1';
+const CACHE = 'jejak-v2';
 
 self.addEventListener('install', (e) => {
   e.waitUntil(
-    caches.open(CACHE).then((c) => c.addAll(['/', '/icons/icon-192.png', '/icons/icon-512.png'])).then(() => self.skipWaiting())
+    caches.open(CACHE).then((c) => c.addAll(['/', '/icons/icon-192.png', '/icons/icon-512.png', '/markers/flow.png'])).then(() => self.skipWaiting())
   );
 });
 
@@ -32,7 +32,7 @@ self.addEventListener('fetch', (e) => {
   }
 
   // aset statis: cache dulu, perbarui di belakang
-  if (url.pathname.startsWith('/_next/static/') || url.pathname.startsWith('/icons/')) {
+  if (url.pathname.startsWith('/_next/static/') || url.pathname.startsWith('/icons/') || url.pathname.startsWith('/markers/')) {
     e.respondWith(
       caches.match(req).then((hit) => {
         const net = fetch(req).then((res) => {

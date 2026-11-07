@@ -9,6 +9,8 @@ const SPEEDS = [1, 2, 4, 8];
 const EMPTY = { type: 'FeatureCollection' as const, features: [] };
 const ICON_KEY = 'jejak.icon';
 const OPT_KEY = 'jejak.opts';
+const MK_KEY = 'jejak.marker';
+const FLOW_SRC = '/markers/flow.png';
 const dotCss = (k: number) => `width:${22 * k}px;height:${22 * k}px;border-radius:50%;background:#2563eb;border:${3 * k}px solid #fff;box-shadow:0 0 0 ${6 * k}px rgba(37,99,235,.25),0 2px 6px rgba(0,0,0,.4)`;
 const iconCss = (u: string, k: number) => `width:${64 * k}px;height:${64 * k}px;background:url("${u}") center/contain no-repeat;filter:drop-shadow(0 2px 4px rgba(0,0,0,.45))`;
 const ZOOMS = [{ n: 'Jauh', z: 16.3 }, { n: 'Sedang', z: 17.3 }, { n: 'Dekat', z: 18.5 }];
@@ -100,6 +102,7 @@ export default function TrackPlayer() {
   const [msg, setMsg] = useState('');
   const [pct, setPct] = useState<number | null>(null);
   const [hasIcon, setHasIcon] = useState(false);
+  const [mk, setMk] = useState<'dot' | 'flow' | 'custom'>('dot');
   const [zi, setZi] = useState(1);
   const [mi, setMi] = useState(1);
   const [ratio, setRatio] = useState<'16:9' | '9:16'>('16:9');
@@ -152,7 +155,10 @@ export default function TrackPlayer() {
     } catch { /* abaikan */ }
     try {
       const saved = localStorage.getItem(ICON_KEY);
-      if (saved) { applyIcon(saved); setHasIcon(true); }
+      if (saved) setHasIcon(true);
+      const choice = localStorage.getItem(MK_KEY);
+      if (choice === 'flow') { applyIcon(FLOW_SRC); setMk('flow'); }
+      else if (choice === 'custom' && saved) { applyIcon(saved); setMk('custom'); }
     } catch { /* abaikan */ }
     const line = { 'line-cap': 'round' as const, 'line-join': 'round' as const };
     map.on('load', () => {
@@ -344,7 +350,7 @@ export default function TrackPlayer() {
       URL.revokeObjectURL(url);
       const data = cv.toDataURL('image/png');
       try { localStorage.setItem(ICON_KEY, data); } catch { /* abaikan */ }
-      applyIcon(data); setHasIcon(true); setMsg('');
+      applyIcon(data); setHasIcon(true); setMk('custom'); saveMk('custom'); setMsg('');
     };
     im.onerror = () => { URL.revokeObjectURL(url); setMsg('Gagal membaca gambar.'); };
     im.src = url;
@@ -352,12 +358,19 @@ export default function TrackPlayer() {
   const saveOpts = (z: number, m: number) => { try { localStorage.setItem(OPT_KEY, JSON.stringify([z, m])); } catch { /* abaikan */ } };
   const pickZoom = () => { const n = (zi + 1) % ZOOMS.length; S.current.zoom = ZOOMS[n].z; setZi(n); saveOpts(n, mi); };
   const pickMsz = () => { const n = (mi + 1) % MSIZES.length; S.current.msz = MSIZES[n].k; setMi(n); styleMarker(); saveOpts(zi, n); };
-  const resetIcon = () => {
-    try { localStorage.removeItem(ICON_KEY); } catch { /* abaikan */ }
-    applyIcon(null); setHasIcon(false);
+  const saveMk = (id: string) => { try { localStorage.setItem(MK_KEY, id); } catch { /* abaikan */ } };
+  const pickMarker = (id: 'dot' | 'flow' | 'custom') => {
+    let src: string | null = null;
+    if (id === 'flow') src = FLOW_SRC;
+    if (id === 'custom') {
+      try { src = localStorage.getItem(ICON_KEY); } catch { /* abaikan */ }
+      if (!src) return;
+    }
+    applyIcon(src); setMk(id); saveMk(id);
   };
 
   const btn = 'rounded-lg border border-slate-600 px-3 py-2 text-sm hover:bg-slate-800 disabled:opacity-40';
+  const on = 'rounded-lg border border-white bg-white px-3 py-2 text-sm text-slate-900';
   const stats: [string, string][] = [
     [(ui.d / 1000).toFixed(2).replace('.', ','), 'Jarak (km)'],
     [fmtT(ui.t), 'Waktu'],
@@ -416,7 +429,7 @@ export default function TrackPlayer() {
             <button className={btn} onClick={cycleSpeed}>{mult}×</button>
             <button className={btn} onClick={toggleFollow}>{follow ? 'Kamera: ikuti' : 'Kamera: semua rute'}</button>
             <button className={btn} disabled={!follow} onClick={pickZoom}>Zoom: {ZOOMS[zi].n}</button>
-            <button className={btn} onClick={pickMsz}>Penanda: {MSIZES[mi].n}</button>
+            <button className={btn} onClick={pickMsz}>Ukuran: {MSIZES[mi].n}</button>
             <button className={btn} onClick={() => setRatio(ratio === '16:9' ? '9:16' : '16:9')}>Rasio: {ratio}</button>
             <button className={btn} onClick={() => setFps(fps === 60 ? 30 : 60)}>FPS: {fps}</button>
             <button className={btn} onClick={doExport}>Ekspor video 1080p</button>
@@ -424,13 +437,16 @@ export default function TrackPlayer() {
               Ganti file
               <input type="file" accept=".gpx,application/gpx+xml,text/xml" className="hidden" onChange={(e) => readFile(e.target.files?.[0])} />
             </label>
+            {(['dot', 'flow'] as const).map((id) => (
+              <button key={id} className={mk === id ? on : btn} onClick={() => pickMarker(id)}>{id === 'dot' ? 'Penanda: Dot' : 'Flow'}</button>
+            ))}
+            {hasIcon && <button className={mk === 'custom' ? on : btn} onClick={() => pickMarker('custom')}>Ikonku</button>}
             <label className={`${btn} cursor-pointer`}>
-              Ikon penanda
+              Upload ikon
               <input type="file" accept="image/png,image/webp" className="hidden" onChange={(e) => { onIcon(e.target.files?.[0]); e.target.value = ''; }} />
             </label>
-            {hasIcon && <button className={btn} onClick={resetIcon}>Reset ikon</button>}
           </div>
-          <p className="mt-2 text-xs text-slate-400">Ikon penanda: PNG transparan 256×256 px (rasio 1:1). Titik tengah gambar = posisi di rute.</p>
+          <p className="mt-2 text-xs text-slate-400">Ikon sendiri: PNG transparan 256×256 px (rasio 1:1). Titik tengah gambar = posisi di rute.</p>
           {msg && <p className="mt-2 text-sm text-red-400">{msg}</p>}
         </div>
       )}
