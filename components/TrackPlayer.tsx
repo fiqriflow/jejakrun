@@ -8,14 +8,17 @@ const DUR = 30000; // ms animasi pada 1×
 const SPEEDS = [1, 2, 4, 8];
 const EMPTY = { type: 'FeatureCollection' as const, features: [] };
 const ICON_KEY = 'jejak.icon';
-const DOT_CSS = 'width:22px;height:22px;border-radius:50%;background:#2563eb;border:3px solid #fff;box-shadow:0 0 0 6px rgba(37,99,235,.25),0 2px 6px rgba(0,0,0,.4)';
-const iconCss = (u: string) => `width:64px;height:64px;background:url("${u}") center/contain no-repeat;filter:drop-shadow(0 2px 4px rgba(0,0,0,.45))`;
+const OPT_KEY = 'jejak.opts';
+const dotCss = (k: number) => `width:${22 * k}px;height:${22 * k}px;border-radius:50%;background:#2563eb;border:${3 * k}px solid #fff;box-shadow:0 0 0 ${6 * k}px rgba(37,99,235,.25),0 2px 6px rgba(0,0,0,.4)`;
+const iconCss = (u: string, k: number) => `width:${64 * k}px;height:${64 * k}px;background:url("${u}") center/contain no-repeat;filter:drop-shadow(0 2px 4px rgba(0,0,0,.45))`;
+const ZOOMS = [{ n: 'Jauh', z: 16.3 }, { n: 'Sedang', z: 17.3 }, { n: 'Dekat', z: 18.5 }];
+const MSIZES = [{ n: 'Kecil', k: 0.75 }, { n: 'Sedang', k: 1 }, { n: 'Besar', k: 1.6 }, { n: 'Jumbo', k: 2.2 }];
 
 type Cam = { lng: number; lat: number; zoom: number; bearing: number; pitch: number; pad: number };
 type Hud = { d: number; t: number; v: number; g: number };
 type St = {
   P: number; playing: boolean; mult: number; follow: boolean; last: number; idx: number;
-  cam: Cam | null; ov: Cam | null; hud: Hud; exp: { hold: number; finish: () => void } | null; pos: [number, number];
+  cam: Cam | null; ov: Cam | null; hud: Hud; exp: { hold: number; finish: () => void } | null; pos: [number, number]; zoom: number; msz: number;
 };
 
 function mapStyle(): string | maplibregl.StyleSpecification {
@@ -36,24 +39,24 @@ function mapStyle(): string | maplibregl.StyleSpecification {
 /** Target kamera: mode ikuti = gaya navigasi Google Maps (miring, searah gerak, titik di bawah tengah). */
 function camTarget(s: St, cur: Cur): Cam | null {
   if (s.follow) {
-    return { lng: cur.lon, lat: cur.lat, zoom: 17.3 - Math.min(1.3, Math.max(0, cur.v - 2) * 0.2), bearing: cur.b, pitch: 62, pad: 0.3 };
+    return { lng: cur.lon, lat: cur.lat, zoom: s.zoom - Math.min(1.3, Math.max(0, cur.v - 2) * 0.2), bearing: cur.b, pitch: 62, pad: 0.3 };
   }
   return s.ov;
 }
 
 /** DOM marker tidak ikut tertangkap kanvas peta, jadi digambar manual ke video. */
-function drawMarker(c: CanvasRenderingContext2D, x: number, y: number, img: HTMLImageElement | null) {
+function drawMarker(c: CanvasRenderingContext2D, x: number, y: number, img: HTMLImageElement | null, k: number) {
   if (img) {
-    const s = 110;
+    const s = 110 * k;
     c.save();
     c.shadowColor = 'rgba(0,0,0,.45)'; c.shadowBlur = 8; c.shadowOffsetY = 3;
     c.drawImage(img, x - s / 2, y - s / 2, s, s);
     c.restore();
     return;
   }
-  c.fillStyle = 'rgba(37,99,235,.25)'; c.beginPath(); c.arc(x, y, 22, 0, 7); c.fill();
-  c.fillStyle = '#fff'; c.beginPath(); c.arc(x, y, 15, 0, 7); c.fill();
-  c.fillStyle = '#2563eb'; c.beginPath(); c.arc(x, y, 10, 0, 7); c.fill();
+  c.fillStyle = 'rgba(37,99,235,.25)'; c.beginPath(); c.arc(x, y, 22 * k, 0, 7); c.fill();
+  c.fillStyle = '#fff'; c.beginPath(); c.arc(x, y, 15 * k, 0, 7); c.fill();
+  c.fillStyle = '#2563eb'; c.beginPath(); c.arc(x, y, 10 * k, 0, 7); c.fill();
 }
 
 function drawHud(c: CanvasRenderingContext2D, h: Hud, name: string) {
@@ -83,9 +86,10 @@ export default function TrackPlayer() {
   const markerRef = useRef<maplibregl.Marker | null>(null);
   const trackRef = useRef<Track | null>(null);
   const iconImg = useRef<HTMLImageElement | null>(null);
+  const iconUrl = useRef<string | null>(null);
   const S = useRef<St>({
     P: 0, playing: false, mult: 1, follow: true, last: 0, idx: -1,
-    cam: null, ov: null, hud: { d: 0, t: 0, v: 0, g: 0 }, exp: null, pos: [0, 0],
+    cam: null, ov: null, hud: { d: 0, t: 0, v: 0, g: 0 }, exp: null, pos: [0, 0], zoom: 17.3, msz: 1,
   });
   const [track, setTrack] = useState<Track | null>(null);
   const [ready, setReady] = useState(false);
@@ -96,7 +100,10 @@ export default function TrackPlayer() {
   const [msg, setMsg] = useState('');
   const [pct, setPct] = useState<number | null>(null);
   const [hasIcon, setHasIcon] = useState(false);
+  const [zi, setZi] = useState(1);
+  const [mi, setMi] = useState(1);
   const [ratio, setRatio] = useState<'16:9' | '9:16'>('16:9');
+  const [fps, setFps] = useState<30 | 60>(60);
 
   const calcOv = useCallback(() => {
     const map = mapRef.current, tr = trackRef.current;
@@ -110,15 +117,20 @@ export default function TrackPlayer() {
     }
   }, []);
 
-  const applyIcon = useCallback((url: string | null) => {
+  const styleMarker = useCallback(() => {
     const m = markerRef.current;
     if (!m) return;
-    const el = m.getElement();
-    el.style.cssText = url ? iconCss(url) : DOT_CSS;
+    const el = m.getElement(), k = S.current.msz, u = iconUrl.current;
+    el.style.cssText = u ? iconCss(u, k) : dotCss(k);
     el.style.display = trackRef.current ? 'block' : 'none';
+  }, []);
+
+  const applyIcon = useCallback((url: string | null) => {
+    iconUrl.current = url;
     if (url) { const im = new Image(); im.onload = () => { iconImg.current = im; }; im.src = url; }
     else iconImg.current = null;
-  }, []);
+    styleMarker();
+  }, [styleMarker]);
 
   // init peta
   useEffect(() => {
@@ -128,8 +140,15 @@ export default function TrackPlayer() {
     });
     mapRef.current = map;
     const el = document.createElement('div');
-    el.style.cssText = DOT_CSS + ';display:none';
+    el.style.cssText = dotCss(1) + ';display:none';
     markerRef.current = new maplibregl.Marker({ element: el }).setLngLat([0, 0]).addTo(map);
+    try {
+      const o = JSON.parse(localStorage.getItem(OPT_KEY) || 'null');
+      if (Array.isArray(o) && ZOOMS[o[0]] && MSIZES[o[1]]) {
+        S.current.zoom = ZOOMS[o[0]].z; S.current.msz = MSIZES[o[1]].k;
+        setZi(o[0]); setMi(o[1]); styleMarker();
+      }
+    } catch { /* abaikan */ }
     try {
       const saved = localStorage.getItem(ICON_KEY);
       if (saved) { applyIcon(saved); setHasIcon(true); }
@@ -147,7 +166,7 @@ export default function TrackPlayer() {
     });
     map.on('resize', calcOv);
     return () => { map.remove(); mapRef.current = null; setReady(false); };
-  }, [calcOv, applyIcon]);
+  }, [calcOv, applyIcon, styleMarker]);
 
   // track baru
   useEffect(() => {
@@ -261,11 +280,11 @@ export default function TrackPlayer() {
     const paint = () => {
       c.drawImage(map.getCanvas(), 0, 0, W, H);
       const pt = map.project(s.pos);
-      drawMarker(c, pt.x, pt.y, iconImg.current);
+      drawMarker(c, pt.x, pt.y, iconImg.current, s.msz);
       drawHud(c, s.hud, tr.name);
     };
     map.on('render', paint);
-    const rec = new MediaRecorder(comp.captureStream(30), { mimeType: mime, videoBitsPerSecond: 12_000_000 });
+    const rec = new MediaRecorder(comp.captureStream(fps), { mimeType: mime, videoBitsPerSecond: fps === 60 ? 20_000_000 : 12_000_000 });
     const chunks: Blob[] = [];
     rec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
     rec.onstop = () => {
@@ -304,6 +323,9 @@ export default function TrackPlayer() {
     im.onerror = () => { URL.revokeObjectURL(url); setMsg('Gagal membaca gambar.'); };
     im.src = url;
   };
+  const saveOpts = (z: number, m: number) => { try { localStorage.setItem(OPT_KEY, JSON.stringify([z, m])); } catch { /* abaikan */ } };
+  const pickZoom = () => { const n = (zi + 1) % ZOOMS.length; S.current.zoom = ZOOMS[n].z; setZi(n); saveOpts(n, mi); };
+  const pickMsz = () => { const n = (mi + 1) % MSIZES.length; S.current.msz = MSIZES[n].k; setMi(n); styleMarker(); saveOpts(zi, n); };
   const resetIcon = () => {
     try { localStorage.removeItem(ICON_KEY); } catch { /* abaikan */ }
     applyIcon(null); setHasIcon(false);
@@ -367,7 +389,10 @@ export default function TrackPlayer() {
             />
             <button className={btn} onClick={cycleSpeed}>{mult}×</button>
             <button className={btn} onClick={toggleFollow}>{follow ? 'Kamera: ikuti' : 'Kamera: semua rute'}</button>
+            <button className={btn} disabled={!follow} onClick={pickZoom}>Zoom: {ZOOMS[zi].n}</button>
+            <button className={btn} onClick={pickMsz}>Penanda: {MSIZES[mi].n}</button>
             <button className={btn} onClick={() => setRatio(ratio === '16:9' ? '9:16' : '16:9')}>Rasio: {ratio}</button>
+            <button className={btn} onClick={() => setFps(fps === 60 ? 30 : 60)}>FPS: {fps}</button>
             <button className={btn} onClick={doExport}>Ekspor video 1080p</button>
             <label className={`${btn} cursor-pointer`}>
               Ganti file
