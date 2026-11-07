@@ -18,7 +18,7 @@ type Cam = { lng: number; lat: number; zoom: number; bearing: number; pitch: num
 type Hud = { d: number; t: number; v: number; g: number };
 type St = {
   P: number; playing: boolean; mult: number; follow: boolean; last: number; idx: number;
-  cam: Cam | null; ov: Cam | null; hud: Hud; exp: { hold: number; finish: () => void } | null; pos: [number, number]; zoom: number; msz: number;
+  cam: Cam | null; ov: Cam | null; hud: Hud; exp: { hold: number; finish: () => void } | null; pos: [number, number]; zoom: number; msz: number; zadj: number; fx: number; warm: boolean;
 };
 
 function mapStyle(): string | maplibregl.StyleSpecification {
@@ -39,7 +39,7 @@ function mapStyle(): string | maplibregl.StyleSpecification {
 /** Target kamera: mode ikuti = gaya navigasi Google Maps (miring, searah gerak, titik di bawah tengah). */
 function camTarget(s: St, cur: Cur): Cam | null {
   if (s.follow) {
-    return { lng: cur.lon, lat: cur.lat, zoom: s.zoom - Math.min(1.3, Math.max(0, cur.v - 2) * 0.2), bearing: cur.b, pitch: 62, pad: 0.3 };
+    return { lng: cur.lon, lat: cur.lat, zoom: s.zoom + s.zadj - Math.min(1.3, Math.max(0, cur.v - 2) * 0.2), bearing: cur.b, pitch: 62, pad: 0.3 };
   }
   return s.ov;
 }
@@ -47,16 +47,16 @@ function camTarget(s: St, cur: Cur): Cam | null {
 /** DOM marker tidak ikut tertangkap kanvas peta, jadi digambar manual ke video. */
 function drawMarker(c: CanvasRenderingContext2D, x: number, y: number, img: HTMLImageElement | null, k: number) {
   if (img) {
-    const s = 110 * k;
+    const s = 64 * k;
     c.save();
     c.shadowColor = 'rgba(0,0,0,.45)'; c.shadowBlur = 8; c.shadowOffsetY = 3;
     c.drawImage(img, x - s / 2, y - s / 2, s, s);
     c.restore();
     return;
   }
-  c.fillStyle = 'rgba(37,99,235,.25)'; c.beginPath(); c.arc(x, y, 22 * k, 0, 7); c.fill();
-  c.fillStyle = '#fff'; c.beginPath(); c.arc(x, y, 15 * k, 0, 7); c.fill();
-  c.fillStyle = '#2563eb'; c.beginPath(); c.arc(x, y, 10 * k, 0, 7); c.fill();
+  c.fillStyle = 'rgba(37,99,235,.25)'; c.beginPath(); c.arc(x, y, 20 * k, 0, 7); c.fill();
+  c.fillStyle = '#fff'; c.beginPath(); c.arc(x, y, 14 * k, 0, 7); c.fill();
+  c.fillStyle = '#2563eb'; c.beginPath(); c.arc(x, y, 11 * k, 0, 7); c.fill();
 }
 
 function drawHud(c: CanvasRenderingContext2D, h: Hud, name: string) {
@@ -89,7 +89,7 @@ export default function TrackPlayer() {
   const iconUrl = useRef<string | null>(null);
   const S = useRef<St>({
     P: 0, playing: false, mult: 1, follow: true, last: 0, idx: -1,
-    cam: null, ov: null, hud: { d: 0, t: 0, v: 0, g: 0 }, exp: null, pos: [0, 0], zoom: 17.3, msz: 1,
+    cam: null, ov: null, hud: { d: 0, t: 0, v: 0, g: 0 }, exp: null, pos: [0, 0], zoom: 17.3, msz: 1, zadj: 0, fx: 1, warm: false,
   });
   const [track, setTrack] = useState<Track | null>(null);
   const [ready, setReady] = useState(false);
@@ -104,6 +104,7 @@ export default function TrackPlayer() {
   const [mi, setMi] = useState(1);
   const [ratio, setRatio] = useState<'16:9' | '9:16'>('16:9');
   const [fps, setFps] = useState<30 | 60>(60);
+  const [prep, setPrep] = useState('');
 
   const calcOv = useCallback(() => {
     const map = mapRef.current, tr = trackRef.current;
@@ -216,7 +217,7 @@ export default function TrackPlayer() {
       s.pos = [cur.lon, cur.lat];
 
       const cam = s.cam, t = camTarget(s, cur);
-      if (cam && t) {
+      if (cam && t && !s.warm) {
         const k = 1 - Math.exp(-dt * 3.2), kb = 1 - Math.exp(-dt * 2);
         cam.lng += (t.lng - cam.lng) * k; cam.lat += (t.lat - cam.lat) * k;
         cam.zoom += (t.zoom - cam.zoom) * k; cam.pitch += (t.pitch - cam.pitch) * k; cam.pad += (t.pad - cam.pad) * k;
@@ -261,6 +262,9 @@ export default function TrackPlayer() {
     const mime = typeof MediaRecorder === 'undefined' ? undefined : types.find((t) => MediaRecorder.isTypeSupported(t));
     if (!mime) { setMsg('Browser ini tidak mendukung perekaman video.'); return; }
     const W = ratio === '9:16' ? 1080 : 1920, H = ratio === '9:16' ? 1920 : 1080;
+    // framing sama dengan layar HP (390px / 844px lebar): zoom dan penanda diskalakan ke resolusi ekspor
+    const f = W / (ratio === '9:16' ? 390 : 844);
+    s.zadj = Math.log2(f); s.fx = f;
     s.playing = false; setPlaying(false); setPct(0); setMsg('');
     // paksa kanvas peta ke 1920×1080 (ditampilkan diperkecil di layar)
     const k = Math.min(window.innerWidth / W, (window.innerHeight - 70) / H, 1);
@@ -269,26 +273,48 @@ export default function TrackPlayer() {
       zIndex: '60', transformOrigin: '0 0', transform: `scale(${k})`,
     });
     map.setPixelRatio(1); map.resize();
+    const idle = (ms: number) => new Promise<void>((r) => { const to = setTimeout(r, ms); map.once('idle', () => { clearTimeout(to); r(); }); });
+    await idle(1500);
+    // pemanasan: muat tile sepanjang rute dulu supaya tidak patah-patah saat merekam
+    s.warm = true;
+    const N = 14;
+    for (let i = 0; i < N; i++) {
+      const t = camTarget(s, at(tr, (i / (N - 1)) * tr.dur));
+      if (!t) break;
+      setPrep(`Menyiapkan peta… ${i + 1}/${N}`);
+      map.jumpTo({ center: [t.lng, t.lat], zoom: t.zoom, bearing: t.bearing, pitch: t.pitch, padding: { top: H * t.pad, bottom: 0, left: 0, right: 0 } });
+      await idle(2500);
+    }
+    setPrep('');
     s.P = 0; s.idx = -1;
-    const c0 = at(tr, 0), t0 = camTarget(s, c0);
-    if (t0) s.cam = { ...t0 };
-    await new Promise<void>((r) => { const to = setTimeout(r, 5000); map.once('idle', () => { clearTimeout(to); r(); }); });
+    const t0 = camTarget(s, at(tr, 0));
+    if (t0) {
+      s.cam = { ...t0 };
+      map.jumpTo({ center: [t0.lng, t0.lat], zoom: t0.zoom, bearing: t0.bearing, pitch: t0.pitch, padding: { top: H * t0.pad, bottom: 0, left: 0, right: 0 } });
+    }
+    s.warm = false;
+    await idle(2500);
 
     const comp = document.createElement('canvas');
     comp.width = W; comp.height = H;
     const c = comp.getContext('2d')!;
+    let lastPaint = 0;
     const paint = () => {
+      const now = performance.now();
+      if (now - lastPaint < (1000 / fps) * 0.8) return; // buang render ganda dalam satu frame
+      lastPaint = now;
       c.drawImage(map.getCanvas(), 0, 0, W, H);
       const pt = map.project(s.pos);
-      drawMarker(c, pt.x, pt.y, iconImg.current, s.msz);
+      drawMarker(c, pt.x, pt.y, iconImg.current, s.msz * s.fx);
       drawHud(c, s.hud, tr.name);
     };
     map.on('render', paint);
-    const rec = new MediaRecorder(comp.captureStream(fps), { mimeType: mime, videoBitsPerSecond: fps === 60 ? 20_000_000 : 12_000_000 });
+    const rec = new MediaRecorder(comp.captureStream(), { mimeType: mime, videoBitsPerSecond: fps === 60 ? 20_000_000 : 12_000_000 });
     const chunks: Blob[] = [];
     rec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
     rec.onstop = () => {
       map.off('render', paint);
+      s.zadj = 0; s.fx = 1;
       wrap.style.cssText = '';
       map.setPixelRatio(window.devicePixelRatio); map.resize();
       setPct(null);
@@ -413,7 +439,7 @@ export default function TrackPlayer() {
         <>
           <div className="fixed inset-0 z-50 bg-black" />
           <div className="fixed left-0 right-0 top-0 z-[70] flex h-[60px] items-center justify-center text-sm text-slate-200">
-            Merekam {ratio === '9:16' ? '1080×1920' : '1920×1080'}… {pct}% — jangan pindah tab
+            {prep || `Merekam ${ratio === '9:16' ? '1080×1920' : '1920×1080'} @${fps}fps… ${pct}%`} — jangan pindah tab
           </div>
         </>
       )}
