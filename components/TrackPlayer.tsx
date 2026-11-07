@@ -82,6 +82,7 @@ function drawHud(c: CanvasRenderingContext2D, h: Hud, name: string) {
 }
 
 export default function TrackPlayer() {
+  const areaRef = useRef<HTMLDivElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const boxRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
@@ -108,6 +109,7 @@ export default function TrackPlayer() {
   const [ratio, setRatio] = useState<'16:9' | '9:16'>('16:9');
   const [fps, setFps] = useState<30 | 60>(60);
   const [prep, setPrep] = useState('');
+  const [fit, setFit] = useState<{ w: number; h: number } | null>(null);
 
   const calcOv = useCallback(() => {
     const map = mapRef.current, tr = trackRef.current;
@@ -174,6 +176,23 @@ export default function TrackPlayer() {
     map.on('resize', calcOv);
     return () => { map.remove(); mapRef.current = null; setReady(false); };
   }, [calcOv, applyIcon, styleMarker]);
+
+  // preview dibatasi ke rasio ekspor: yang terlihat di layar = yang masuk video
+  useEffect(() => {
+    const el = areaRef.current;
+    if (!el) return;
+    const a = ratio === '9:16' ? 9 / 16 : 16 / 9;
+    const calc = () => {
+      const W = el.clientWidth, H = el.clientHeight;
+      if (!W || !H) return;
+      const wide = W / H > a;
+      setFit({ w: Math.floor(wide ? H * a : W), h: Math.floor(wide ? H : W / a) });
+    };
+    calc();
+    const ro = new ResizeObserver(calc);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [ratio]);
 
   // track baru
   useEffect(() => {
@@ -268,8 +287,9 @@ export default function TrackPlayer() {
     const mime = typeof MediaRecorder === 'undefined' ? undefined : types.find((t) => MediaRecorder.isTypeSupported(t));
     if (!mime) { setMsg('Browser ini tidak mendukung perekaman video.'); return; }
     const W = ratio === '9:16' ? 1080 : 1920, H = ratio === '9:16' ? 1920 : 1080;
-    // framing sama dengan layar HP (390px / 844px lebar): zoom dan penanda diskalakan ke resolusi ekspor
-    const f = W / (ratio === '9:16' ? 390 : 844);
+    // framing sama persis dengan preview: zoom dan penanda diskalakan ke resolusi ekspor
+    const saved = wrap.style.cssText;
+    const f = W / (wrap.clientWidth || W);
     s.zadj = Math.log2(f); s.fx = f;
     s.playing = false; setPlaying(false); setPct(0); setMsg('');
     // paksa kanvas peta ke 1920×1080 (ditampilkan diperkecil di layar)
@@ -321,7 +341,7 @@ export default function TrackPlayer() {
     rec.onstop = () => {
       map.off('render', paint);
       s.zadj = 0; s.fx = 1;
-      wrap.style.cssText = '';
+      wrap.style.cssText = saved;
       map.setPixelRatio(window.devicePixelRatio); map.resize();
       setPct(null);
       const url = URL.createObjectURL(new Blob(chunks, { type: mime.split(';')[0] }));
@@ -384,8 +404,12 @@ export default function TrackPlayer() {
       onDragOver={(e) => e.preventDefault()}
       onDrop={(e) => { e.preventDefault(); readFile(e.dataTransfer.files[0]); }}
     >
-      <div className="relative min-h-0 flex-1">
-        <div ref={wrapRef} className="absolute inset-0">
+      <div ref={areaRef} className="relative min-h-0 flex-1">
+        <div
+          ref={wrapRef}
+          className="absolute left-1/2 top-1/2 overflow-hidden rounded-lg ring-1 ring-slate-700"
+          style={fit ? { width: fit.w, height: fit.h, transform: 'translate(-50%, -50%)' } : { inset: 0 }}
+        >
           <div ref={boxRef} className="h-full w-full" />
         </div>
         {!track && (
