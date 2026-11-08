@@ -5,7 +5,7 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 import { at, demoGpx, fmtPace, fmtT, lerpAngle, parseGpx, speedColor, type Cur, type Track } from '@/lib/gpx';
 
 const DUR = 30000; // ms animasi pada 1×
-const SPEEDS = [1, 2, 4, 8];
+const SPEEDS = [0.25, 0.5, 1, 2, 4, 8];
 const EMPTY = { type: 'FeatureCollection' as const, features: [] };
 const ICON_KEY = 'jejak.icon';
 const OPT_KEY = 'jejak.opts';
