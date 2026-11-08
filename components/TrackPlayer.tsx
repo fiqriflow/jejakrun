@@ -13,7 +13,7 @@ const MK_KEY = 'jejak.marker';
 const FLOW_SRC = '/markers/flow.png';
 const dotCss = (k: number) => `width:${22 * k}px;height:${22 * k}px;border-radius:50%;background:#2563eb;border:${3 * k}px solid #fff;box-shadow:0 0 0 ${6 * k}px rgba(37,99,235,.25),0 2px 6px rgba(0,0,0,.4)`;
 const iconCss = (u: string, k: number) => `width:${64 * k}px;height:${64 * k}px;background:url("${u}") center/contain no-repeat;filter:drop-shadow(0 2px 4px rgba(0,0,0,.45))`;
-const ZOOMS = [{ n: 'Jauh', z: 16.3 }, { n: 'Sedang', z: 17.3 }, { n: 'Dekat', z: 18.5 }];
+const ZOOMS = [{ n: 'Jauh', z: 16.3 }, { n: 'Sedang', z: 17.3 }, { n: 'Dekat', z: 18.5 }, { n: 'Sangat dekat', z: 19.6 }];
 const MSIZES = [{ n: 'Kecil', k: 0.75 }, { n: 'Sedang', k: 1 }, { n: 'Besar', k: 1.6 }, { n: 'Jumbo', k: 2.2 }];
 
 type Cam = { lng: number; lat: number; zoom: number; bearing: number; pitch: number; pad: number };
@@ -61,14 +61,14 @@ function drawMarker(c: CanvasRenderingContext2D, x: number, y: number, img: HTML
   c.fillStyle = '#2563eb'; c.beginPath(); c.arc(x, y, 11 * k, 0, 7); c.fill();
 }
 
-function drawHud(c: CanvasRenderingContext2D, h: Hud, name: string) {
+function drawHud(c: CanvasRenderingContext2D, h: Hud, name: string, H: number, bottom: number) {
   const items: [string, string][] = [
     [(h.d / 1000).toFixed(2).replace('.', ','), 'km'],
     [fmtT(h.t), 'waktu'],
     [h.v > 0.3 ? fmtPace(1000 / h.v) : '–', 'menit/km'],
     [String(Math.round(h.g)), 'm naik'],
   ];
-  const x = 40, y = 40, oy = name ? 36 : 0;
+  const x = 40, oy = name ? 36 : 0, y = H - bottom - (120 + oy);
   c.fillStyle = 'rgba(15,23,42,.82)';
   c.beginPath();
   c.roundRect(x, y, 780, 120 + oy, 24);
@@ -79,6 +79,17 @@ function drawHud(c: CanvasRenderingContext2D, h: Hud, name: string) {
     c.fillStyle = '#fff'; c.font = '700 46px system-ui, sans-serif'; c.fillText(it[0], x + 28 + i * 190, y + oy + 74);
     c.fillStyle = '#94a3b8'; c.font = '24px system-ui, sans-serif'; c.fillText(it[1], x + 28 + i * 190, y + oy + 104);
   });
+}
+
+/** Atribusi peta wajib tampil; kontrol DOM tidak ikut tertangkap di video. */
+function drawAttribution(c: CanvasRenderingContext2D, W: number, H: number) {
+  const txt = process.env.NEXT_PUBLIC_MAPTILER_KEY ? '© MapTiler © OpenStreetMap contributors' : '© OpenStreetMap contributors';
+  c.save();
+  c.font = '22px system-ui, sans-serif'; c.textAlign = 'right';
+  c.shadowColor = 'rgba(0,0,0,.7)'; c.shadowBlur = 4;
+  c.fillStyle = 'rgba(255,255,255,.92)';
+  c.fillText(txt, W - 24, H - 20);
+  c.restore();
 }
 
 export default function TrackPlayer() {
@@ -287,18 +298,14 @@ export default function TrackPlayer() {
     const mime = typeof MediaRecorder === 'undefined' ? undefined : types.find((t) => MediaRecorder.isTypeSupported(t));
     if (!mime) { setMsg('Browser ini tidak mendukung perekaman video.'); return; }
     const W = ratio === '9:16' ? 1080 : 1920, H = ratio === '9:16' ? 1920 : 1080;
-    // framing sama persis dengan preview: zoom dan penanda diskalakan ke resolusi ekspor
-    const saved = wrap.style.cssText;
-    const f = W / (wrap.clientWidth || W);
-    s.zadj = Math.log2(f); s.fx = f;
+    // WYSIWYG: peta tetap berukuran preview, hanya pixel ratio dinaikkan ke resolusi ekspor.
+    // Zoom, garis rute, label jalan/gedung, dan penanda otomatis proporsional dengan preview.
+    const w0 = wrap.clientWidth || W, h0 = wrap.clientHeight || H;
+    const f = W / w0, sy = H / h0;
+    s.fx = f;
     s.playing = false; setPlaying(false); setPct(0); setMsg('');
-    // paksa kanvas peta ke 1920×1080 (ditampilkan diperkecil di layar)
-    const k = Math.min(window.innerWidth / W, (window.innerHeight - 70) / H, 1);
-    Object.assign(wrap.style, {
-      position: 'fixed', inset: 'auto', left: '0', top: '60px', width: `${W}px`, height: `${H}px`,
-      zIndex: '60', transformOrigin: '0 0', transform: `scale(${k})`,
-    });
-    map.setPixelRatio(1); map.resize();
+    map.setPixelRatio(f); map.resize();
+    const ch = map.getContainer().clientHeight;
     const idle = (ms: number) => new Promise<void>((r) => { const to = setTimeout(r, ms); map.once('idle', () => { clearTimeout(to); r(); }); });
     await idle(1500);
     // pemanasan: muat tile sepanjang rute dulu supaya tidak patah-patah saat merekam
@@ -308,7 +315,7 @@ export default function TrackPlayer() {
       const t = camTarget(s, at(tr, (i / (N - 1)) * tr.dur));
       if (!t) break;
       setPrep(`Menyiapkan peta… ${i + 1}/${N}`);
-      map.jumpTo({ center: [t.lng, t.lat], zoom: t.zoom, bearing: t.bearing, pitch: t.pitch, padding: { top: H * t.pad, bottom: 0, left: 0, right: 0 } });
+      map.jumpTo({ center: [t.lng, t.lat], zoom: t.zoom, bearing: t.bearing, pitch: t.pitch, padding: { top: ch * t.pad, bottom: 0, left: 0, right: 0 } });
       await idle(2500);
     }
     setPrep('');
@@ -316,7 +323,7 @@ export default function TrackPlayer() {
     const t0 = camTarget(s, at(tr, 0));
     if (t0) {
       s.cam = { ...t0 };
-      map.jumpTo({ center: [t0.lng, t0.lat], zoom: t0.zoom, bearing: t0.bearing, pitch: t0.pitch, padding: { top: H * t0.pad, bottom: 0, left: 0, right: 0 } });
+      map.jumpTo({ center: [t0.lng, t0.lat], zoom: t0.zoom, bearing: t0.bearing, pitch: t0.pitch, padding: { top: ch * t0.pad, bottom: 0, left: 0, right: 0 } });
     }
     s.warm = false;
     await idle(2500);
@@ -331,8 +338,9 @@ export default function TrackPlayer() {
       lastPaint = now;
       c.drawImage(map.getCanvas(), 0, 0, W, H);
       const pt = map.project(s.pos);
-      drawMarker(c, pt.x, pt.y, iconImg.current, s.msz * s.fx);
-      drawHud(c, s.hud, tr.name);
+      drawMarker(c, pt.x * f, pt.y * sy, iconImg.current, s.msz * f);
+      drawHud(c, s.hud, tr.name, H, ratio === '9:16' ? 150 : 40);
+      drawAttribution(c, W, H);
     };
     map.on('render', paint);
     const rec = new MediaRecorder(comp.captureStream(), { mimeType: mime, videoBitsPerSecond: fps === 60 ? 20_000_000 : 12_000_000 });
@@ -341,7 +349,6 @@ export default function TrackPlayer() {
     rec.onstop = () => {
       map.off('render', paint);
       s.zadj = 0; s.fx = 1;
-      wrap.style.cssText = saved;
       map.setPixelRatio(window.devicePixelRatio); map.resize();
       setPct(null);
       const url = URL.createObjectURL(new Blob(chunks, { type: mime.split(';')[0] }));
@@ -477,9 +484,9 @@ export default function TrackPlayer() {
 
       {pct !== null && (
         <>
-          <div className="fixed inset-0 z-50 bg-black" />
-          <div className="fixed left-0 right-0 top-0 z-[70] flex h-[60px] items-center justify-center text-sm text-slate-200">
-            {prep || `Merekam ${ratio === '9:16' ? '1080×1920' : '1920×1080'} @${fps}fps… ${pct}%`} — jangan pindah tab
+          <div className="fixed inset-0 z-50 bg-black/40" />
+          <div className="fixed left-0 right-0 top-0 z-[70] flex h-[60px] items-center justify-center bg-slate-900/90 text-sm text-slate-200">
+            {prep || `Merekam ${ratio === '9:16' ? '1080×1920' : '1920×1080'} @${fps}fps… ${pct}%`} — jangan pindah tab atau ubah ukuran jendela
           </div>
         </>
       )}
